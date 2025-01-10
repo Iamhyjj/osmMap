@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hyj's map</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.css" />
+    <style>
+        #map {
+            width: 100%;
+            height: 600px;
+            display: none; /* 初始化完成前隐藏地图 */
+        }
+        button, input {
+            margin: 10px;
+        }
+        #search-controls {
+            display: flex;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <label for="modeSelect">Choose your route mode:</label>
+    <select id="modeSelect">
+        <option value="driving">Driving</option>
+        <option value="walking">Walking</option>
+        <option value="cycling">Cycling</option>
+    </select>
+
+    <label for="algorithmSelect">Choose your routing algorithm:</label>
+    <select id="algorithmSelect">
+        <option value="A*">A*</option>
+        <option value="Dijkstra">Dijkstra</option>
+    </select>
+
+
+    <h1>hyj's map</h1>
+    <div>
+        <button id="initializeBtn">Initialize Map</button>
+        <button id="resetBtn">Reset</button>
+    </div>
+    <div id="search-controls">
+        <input type="text" id="searchInput" placeholder="Search for a location" />
+        <button id="searchStartBtn">Set as Start</button>
+        <button id="searchEndBtn">Set as End</button>
+    </div>
+    <div id="map"></div>
+
+    <!-- Leaflet.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.js"></script>
+
+    <script>
+        let map, startPoint, endPoint, wayPoint,startMarker, endMarker, wayPointMarker,currentPath;
+
+        // WebAssembly 模块初始化
+        var Module = {
+            onRuntimeInitialized: function () {
+                console.log("WebAssembly module initialized.");
+
+                if (localStorage.getItem("isInitialized") === "true") {
+                    console.log("Map already initialized from a previous session.");
+                    initializeLeafletMap();
+                } else {
+                    document.getElementById("initializeBtn").addEventListener("click", function () {
+                        console.log("Initialize button clicked.");
+                        try {
+                            Module.InitializeMap(); // 假设 map_data.json 是地图数据
+                            console.log("Map initialized successfully!");
+
+                            localStorage.setItem("isInitialized", "true");
+                            initializeLeafletMap();
+                        } catch (error) {
+                            console.error("Error during InitializeMap:", error);
+                        }
+                    });
+                }
+            }
+        };
+    </script>
+    <script src="exposed.js"></script>
+    <script>
+        let routeMode = 'driving'; // 默认寻路模式
+
+        // 监听模式选择变化
+        document.getElementById("modeSelect").addEventListener("change", function () {
+            routeMode = this.value;
+            console.log(`Route mode changed to: ${routeMode}`);
+        });
+
+        let algorithm = 'A*'; // 默认使用 Dijkstra 算法
+
+        // 监听算法选择框的变化
+        document.getElementById("algorithmSelect").addEventListener("change", function () {
+            algorithm = this.value;
+            console.log(`Routing algorithm changed to: ${algorithm}`);
+        });
+
+
+        function initializeLeafletMap() {
+            document.getElementById('map').style.display = 'block';
+
+            if (!map) {
+                // 定义地图的边界范围
+                const minLat = 30.6533000;
+                const minLon = 120.6148000;
+                const maxLat = 31.4486000;
+                const maxLon = 122.1117000;
+                const bounds = [[minLat, minLon], [maxLat, maxLon]];
+
+                // 初始化地图
+                map = L.map('map', {
+                    maxBounds: bounds, // 设置最大边界
+                    maxBoundsViscosity: 1.0, // 确保拖动到边界外时被阻止
+                    minZoom: 10, // 限制最小缩放级别
+                    maxZoom: 19, // 限制最大缩放级别
+                }).setView([31.2304, 121.4737], 13); // 初始视角为上海
+
+                // 添加地图图层
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                    maxZoom: 19,
+                }).addTo(map);
+
+                console.log("Leaflet map initialized.");
+                map.on('click', onMapClick);
+
+                // 设置地图初始范围
+                map.fitBounds(bounds); // 强制使地图适应于给定的边界
+
+            }
+
+            document.getElementById("resetBtn").addEventListener("click", resetMap);
+            document.getElementById("searchStartBtn").addEventListener("click", () => searchLocation("start"));
+            document.getElementById("searchEndBtn").addEventListener("click", () => searchLocation("end"));
+        }
+
+
+
+        function resetMap() {
+            console.log("Resetting map...");
+
+            if (startMarker) {
+                map.removeLayer(startMarker);
+                startMarker = null;
+            }
+            if (endMarker) {
+                map.removeLayer(endMarker);
+                endMarker = null;
+            }
+            if(wayPointMarker){
+                map.removeLayer(wayPointMarker);
+                wayPointMarker = null;
+            }
+            if (currentPath) {
+                map.removeLayer(currentPath);
+                currentPath = null;
+            }
+            
+            wayPoint = null;
+            startPoint = null;
+            endPoint = null;
+
+            localStorage.removeItem("isInitialized");
+            console.log("Map reset completed.");
+        }
+
+        function onMapClick(e) {
+            if (!startPoint){
+                setStartPoint(e.latlng);
+            } 
+            else if (!endPoint) {
+                setEndPoint(e.latlng);
+            } 
+            else if(e.originalEvent.ctrlKey){
+                setWayPoint(e.latlng);
+            }
+            else {
+                alert("Both Start and End Points are already selected. Drag to adjust them.");
+            }
+        }
+
+        function setWayPoint(latlng) {
+            // 如果已经有途径点，移除旧的途径点
+            if (wayPointMarker) {
+                map.removeLayer(wayPointMarker);
+            }
+
+            // 在点击位置创建一个新的标记
+            wayPointMarker = L.marker(latlng, { draggable: true }).addTo(map)
+                .bindPopup("Waypoint")  // 给途径点添加提示信息
+                .openPopup();
+
+            // 监听途径点拖动结束事件
+            wayPointMarker.on('dragend', function (event) {
+                wayPoint = event.target.getLatLng(); // 更新途径点位置
+                console.log("Waypoint dragged to:", wayPoint);
+                updateNodeAndRoute(wayPoint, "waypoint");
+            });
+
+            console.log("Waypoint added at:", latlng);
+        }
+
+
+        function setStartPoint(latlng) {
+            startPoint = latlng;
+            if (startMarker) startMarker.remove();
+            startMarker = L.marker(startPoint, { draggable: true })
+                .addTo(map)
+                .bindPopup("Start Point")
+                .openPopup();
+
+            startMarker.on('dragend', function (event) {
+                startPoint = event.target.getLatLng();
+                updateNodeAndRoute(startPoint, "start");
+            });
+
+            console.log("Start Point selected:", startPoint);
+            updateNodeAndRoute(startPoint, "start");
+        }
+
+        function setEndPoint(latlng) {
+            endPoint = latlng;
+            if (endMarker) endMarker.remove();
+            endMarker = L.marker(endPoint, { draggable: true })
+                .addTo(map)
+                .bindPopup("End Point")
+                .openPopup();
+
+            endMarker.on('dragend', function (event) {
+                endPoint = event.target.getLatLng();
+                updateNodeAndRoute(endPoint, "end");
+            });
+
+            console.log("End Point selected:", endPoint);
+            updateNodeAndRoute(endPoint, "end");
+        }
+
+        async function searchLocation(type) {
+            const query = document.getElementById("searchInput").value;
+            if (!query) {
+                alert("Please enter a location to search.");
+                return;
+            }
+
+            const overpassUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+            try {
+                const response = await fetch(overpassUrl);
+                const results = await response.json();
+
+                if (results && results.length > 0) {
+                    const { lat, lon } = results[0];
+                    const latlng = L.latLng(parseFloat(lat), parseFloat(lon));
+                    console.log(`Location found for "${query}":`, latlng);
+
+                    // 使用 fetchNearestNode 获取搜索地点附近的最近节点
+                    const nearestNodeId = fetchNearestNode(latlng.lat, latlng.lng);
+
+                    if (nearestNodeId) {
+                        const nearestLatLng = L.latLng(latlng.lat, latlng.lng);
+                        console.log(`Nearest node found at:`, nearestLatLng);
+
+                        if (type === "start") {
+                            setStartPoint(nearestLatLng);
+                        } else if (type === "end") {
+                            setEndPoint(nearestLatLng);
+                        }
+                    } else {
+                        alert(`No valid road node found near the searched location.`);
+                    }
+                } else {
+                    alert(`No results found for "${query}".`);
+                }
+            } catch (error) {
+                console.error("Error during location search:", error);
+                alert("Failed to search for the location.");
+            }
+        }
+
+
+        function updateNodeAndRoute(point, type) {
+            const nodeId = fetchNearestNode(point.lat, point.lng);
+            if (nodeId) {
+                if (type === "start") {
+                    startPoint.nodeId = nodeId;
+                } else if (type === "end") {
+                    endPoint.nodeId = nodeId;
+                }
+                else wayPoint.nodeId = nodeId;
+
+                if (startPoint?.nodeId && endPoint?.nodeId) {
+                    findAndDrawPath();
+                }
+            } else {
+                alert(`No highway nodes found near the ${type === "start" ? "start" : "end"} point.`);
+            }
+        }
+        
+        function findAndDrawPath() {
+            if (!startPoint?.nodeId || !endPoint?.nodeId) {
+                console.error("Start or End node ID is missing.");
+                return;
+            }
+
+            try {
+                let result;
+                // 无途径点
+                if (!wayPointMarker) {
+                    result = Module.FindShortestWay(startPoint.nodeId.toString(), endPoint.nodeId.toString(), routeMode , algorithm);
+                }
+                // 有途径点
+                else {
+                    // 获取途径点的 nodeId
+                    const waypointNodeId = fetchNearestNode(wayPointMarker.getLatLng().lat, wayPointMarker.getLatLng().lng);
+
+                    // 先计算从起点到途径点的路径
+                    const firstLegResult = Module.FindShortestWay(startPoint.nodeId.toString(), waypointNodeId.toString(), routeMode, algorithm);
+
+                    // 再计算从途径点到终点的路径
+                    const secondLegResult = Module.FindShortestWay(waypointNodeId.toString(), endPoint.nodeId.toString(), routeMode, algorithm);
+
+                    // 合并两段路径
+                    const firstLegPath = JSON.parse(firstLegResult);
+                    const secondLegPath = JSON.parse(secondLegResult);
+
+                    // 合并路径，去掉第二段路径的第一个点（避免途径点重复）
+                    const combinedPath = firstLegPath.concat(secondLegPath.slice(1));
+
+                    // 将合并后的路径保存到 result 中
+                    result = JSON.stringify(combinedPath);
+                }
+                const pathData = JSON.parse(result);
+                if (Array.isArray(pathData) && pathData.length > 0) {
+                    if (currentPath) map.removeLayer(currentPath);
+                    currentPath = L.polyline(pathData, { color: 'blue' }).addTo(map);
+                    map.fitBounds(currentPath.getBounds());
+                    console.log("Path drawn on the map.");
+                } else {
+                    alert("No valid path data returned.");
+                }
+
+            } catch (error) {
+                console.error("Error finding shortest path:", error);
+            }
+        }
+
+        function fetchNearestNode(lat, lon) {
+            return Module.FetchNearestNode(lat, lon, routeMode);
+        }
+
+
+
+    </script>
+</body>
+</html>

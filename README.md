@@ -37,7 +37,7 @@ emcc quadTree.cpp osmMap.cpp tinyxml/tinyxml.cpp tinyxml/tinystr.cpp tinyxml/tin
 python -m http.server
 ```
 然后在浏览器输入：127.0.0.1:8000即可使用地图服务，点击initialize按钮后等待一分钟左右即可。建议不要点击多次initialize按钮，可能会引发意外的bug。   
-**注意:map文件受文件上传大小限制并没有在仓库中，您需要到OpenStreetMap上下载您所需的区域地图，并在frontend中修改相应的地图边界的经纬度范围
+**注意**:map文件受文件上传大小限制并没有在仓库中，您需要到OpenStreetMap上下载您所需的区域地图，并在frontend中修改相应的地图边界的经纬度范围
 
 ## 2. 基本功能完成情况
 
